@@ -340,7 +340,7 @@ public abstract class DataBufferUtils {
 	/**
 	 * Write the given stream of {@link DataBuffer DataBuffers} to the given
 	 * file {@link Path}. The optional {@code options} parameter specifies
-	 * how the created or opened (defaults to
+	 * how the file is created or opened (defaults to
 	 * {@link StandardOpenOption#CREATE CREATE},
 	 * {@link StandardOpenOption#TRUNCATE_EXISTING TRUNCATE_EXISTING}, and
 	 * {@link StandardOpenOption#WRITE WRITE}).
@@ -470,7 +470,7 @@ public abstract class DataBufferUtils {
 	}
 
 	/**
-	 * Retain the given data buffer, it it is a {@link PooledDataBuffer}.
+	 * Retain the given data buffer, if it is a {@link PooledDataBuffer}.
 	 * @param dataBuffer the data buffer to retain
 	 * @return the retained buffer
 	 */
@@ -525,16 +525,35 @@ public abstract class DataBufferUtils {
 	 */
 	@SuppressWarnings("unchecked")
 	public static Mono<DataBuffer> join(Publisher<? extends DataBuffer> dataBuffers) {
-		Assert.notNull(dataBuffers, "'dataBuffers' must not be null");
+		return join(dataBuffers, -1);
+	}
 
-		if (dataBuffers instanceof Mono) {
-			return (Mono<DataBuffer>) dataBuffers;
+	/**
+	 * Variant of {@link #join(Publisher)} that behaves the same way up until
+	 * the specified max number of bytes to buffer. Once the limit is exceeded,
+	 * {@link DataBufferLimitException} is raised.
+	 * @param buffers the data buffers that are to be composed
+	 * @param maxByteCount the max number of bytes to buffer, or -1 for unlimited
+	 * @return a buffer with the aggregated content, possibly an empty Mono if
+	 * the max number of bytes to buffer is exceeded.
+	 * @throws DataBufferLimitException if maxByteCount is exceeded
+	 * @since 5.1.11
+	 */
+	@SuppressWarnings("unchecked")
+	public static Mono<DataBuffer> join(Publisher<? extends DataBuffer> buffers, int maxByteCount) {
+		Assert.notNull(buffers, "'dataBuffers' must not be null");
+
+		if (buffers instanceof Mono) {
+			return (Mono<DataBuffer>) buffers;
 		}
 
-		return Flux.from(dataBuffers)
-				.collectList()
+		// TODO: Drop doOnDiscard(LimitedDataBufferList.class, ...) (reactor-core#1924)
+
+		return Flux.from(buffers)
+				.collect(() -> new LimitedDataBufferList(maxByteCount), LimitedDataBufferList::add)
 				.filter(list -> !list.isEmpty())
 				.map(list -> list.get(0).factory().join(list))
+				.doOnDiscard(LimitedDataBufferList.class, LimitedDataBufferList::releaseAndClear)
 				.doOnDiscard(PooledDataBuffer.class, DataBufferUtils::release);
 	}
 
